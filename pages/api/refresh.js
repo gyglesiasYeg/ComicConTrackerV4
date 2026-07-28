@@ -25,27 +25,51 @@ const knownSources = {
 };
 
 function normalizeText(s = '') {
-  return String(s).replace(/\r/g, '\n').replace(/\t/g, ' ').replace(/[ ]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  return String(s)
+    .replace(/\r/g, '\n')
+    .replace(/\t/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, '\n')
+    .replace(/[ ]{2,}/g, ' ')
+    .replace(/\n[ ]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function initials(name) {
+  return String(name || '?')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(x => x[0])
+    .join('')
+    .toUpperCase() || '?';
+}
+
+function safeId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return 'id-' + Math.random().toString(36).slice(2) + Date.now();
 }
 
 function uniqByName(items) {
   const map = new Map();
   for (const item of items) {
-    const key = String(item.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const name = String(item.name || '').trim();
+    const key = name.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (!key || key.length < 3) continue;
+    if (/^(all guests|celebrities|comic creators|featured guests|special guests|also appearing|main events|cosplay|anime|gaming|photo ops|autograph sessions)$/i.test(name)) continue;
     if (!map.has(key)) map.set(key, item);
   }
   return Array.from(map.values());
 }
 
-function initials(name) {
-  return String(name || '?').split(/\s+/).filter(Boolean).slice(0,2).map(x => x[0]).join('').toUpperCase() || '?';
-}
-
 async function fetchDirect(url) {
   const res = await fetch(url, {
     headers: {
-      'user-agent': 'Mozilla/5.0 ComicConTracker/4.0',
+      'user-agent': 'Mozilla/5.0 ComicConTracker/4.1',
       'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
     }
   });
@@ -65,63 +89,149 @@ async function fetchWithFirecrawl(url) {
       url,
       formats: ['markdown', 'html', 'links'],
       onlyMainContent: false,
-      waitFor: 2500,
-      mobile: false,
+      waitFor: 3500,
       timeout: 60000,
-      blockAds: true
+      blockAds: true,
+      removeBase64Images: true
     })
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok || !json.success) throw new Error(json.error || `Firecrawl failed ${res.status}`);
-  return [json.data?.markdown, json.data?.html, Array.isArray(json.data?.links) ? json.data.links.join('\n') : ''].filter(Boolean).join('\n');
+  return [json.data?.markdown, json.data?.html, Array.isArray(json.data?.links) ? json.data.links.join('\n') : '']
+    .filter(Boolean)
+    .join('\n');
 }
 
 async function fetchPage(url) {
   try {
-    const text = await fetchWithFirecrawl(url);
-    return { text: normalizeText(text), method: 'firecrawl' };
+    const raw = await fetchWithFirecrawl(url);
+    return { raw, text: normalizeText(raw), method: 'firecrawl' };
   } catch (fireError) {
     try {
-      const text = await fetchDirect(url);
-      return { text: normalizeText(text), method: 'direct', warning: fireError.message };
+      const raw = await fetchDirect(url);
+      return { raw, text: normalizeText(raw), method: 'direct', warning: fireError.message };
     } catch (directError) {
-      return { text: '', method: 'failed', warning: `${fireError.message}; ${directError.message}` };
+      return { raw: '', text: '', method: 'failed', warning: `${fireError.message}; ${directError.message}` };
     }
   }
 }
 
-function parseFanExpoGuests(text, sourceUrl) {
-  const items = [];
-  const clean = normalizeText(text).replace(/\*/g, '');
+function wordsLookLikeName(line) {
+  const s = line.trim();
+  if (s.length < 4 || s.length > 70) return false;
+  if (/\d{3,}|\$|http|tickets|newsletter|learn more|buy now|privacy|cookie|sitemap|copyright|show hours|countdown|policies|facebook|instagram/i.test(s)) return false;
+  const parts = s.split(/\s+/).filter(Boolean);
+  if (parts.length < 2 || parts.length > 5) return false;
+  return parts.every(p => /^[A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+$/.test(p));
+}
 
-  // Pattern often seen in FAN EXPO rendered text: Name FANDOM Appearing: Fri, Sat, Sun
-  const re = /([A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+(?:\s+[A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+){0,4})\s+([^\n]{2,90}?)\s+Appearing:\s*(Fri|Sat|Sun|Thu|TBD|Friday|Saturday|Sunday|Thursday)(?:,?\s*(Fri|Sat|Sun|Thu|Friday|Saturday|Sunday|Thursday))*[^\n]*/gi;
+function parsePriceNear(block, label) {
+  const re = new RegExp(label + '\\s*:?\\s*\\$([0-9]+(?:\\.[0-9]{1,2})?)', 'i');
+  const m = block.match(re);
+  return m ? Number(m[1]) : 0;
+}
+
+function parseDaysFromText(text) {
+  const m = text.match(/Appearing\s*:?\s*([^\n]+)/i);
+  if (!m) return ['TBD'];
+  const raw = m[1].replace(/Pricing.*$/i, '').replace(/Prices subject.*$/i, '').trim();
+  const days = raw.split(/,| and |\//).map(x => x.trim()).filter(Boolean);
+  return days.length ? days : ['TBD'];
+}
+
+function parseFanExpoGuests(text, sourceUrl) {
+  const clean = normalizeText(text);
+  const lines = clean.split('\n').map(x => x.trim()).filter(Boolean);
+  const items = [];
+
+  // Strategy 1: block parser around "Appearing:" because FAN EXPO pages often render as stacked text.
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^Appearing\s*:/i.test(lines[i])) continue;
+    let name = '';
+    let fandom = 'Guest';
+
+    for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
+      if (!name && wordsLookLikeName(lines[j])) {
+        name = lines[j];
+        const between = lines.slice(j + 1, i).filter(x => !/^Pricing$/i.test(x));
+        fandom = between.join(' / ') || 'Guest';
+        break;
+      }
+    }
+
+    if (name) {
+      const block = lines.slice(Math.max(0, i - 5), Math.min(lines.length, i + 12)).join('\n');
+      items.push({
+        name,
+        fandom,
+        days: parseDaysFromText(lines[i]),
+        auto: parsePriceNear(block, 'Autograph'),
+        photo: parsePriceNear(block, 'Photo Op'),
+        photoUrl: extractFirstImageNear(text, name),
+        sourceUrl
+      });
+    }
+  }
+
+  // Strategy 2: single-line parser for snippets/markdown with Name FANDOM Appearing: Fri, Sat, Sun.
+  const compact = clean.replace(/\n+/g, ' ');
+  const re = /([A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+(?:\s+[A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+){1,4})\s+([^\n]{2,100}?)\s+Appearing\s*:\s*(Fri|Sat|Sun|Thu|Friday|Saturday|Sunday|Thursday|TBD)(?:,?\s*(Fri|Sat|Sun|Thu|Friday|Saturday|Sunday|Thursday))*[^A-Z]{0,30}/gi;
   let m;
-  while ((m = re.exec(clean))) {
+  while ((m = re.exec(compact))) {
     const full = m[0];
     const name = m[1].trim();
-    if (/All Guests|Celebrities|Animation|Comic Creators|Special Guests|Featured Guests|Also Appearing/i.test(name)) continue;
+    if (!wordsLookLikeName(name)) continue;
     const fandom = (m[2] || 'Guest').replace(/Pricing.*$/i, '').trim();
-    const daysMatch = full.match(/Appearing:\s*([^\n]+)/i);
-    const days = daysMatch ? daysMatch[1].replace(/Pricing.*$/i, '').split(/,| and /).map(x => x.trim()).filter(Boolean) : ['TBD'];
-    const auto = ((full.match(/Autograph:\s*\$([0-9.]+)/i) || [])[1]) || '';
-    const photo = ((full.match(/Photo Op:\s*\$([0-9.]+)/i) || [])[1]) || '';
-    items.push({ name, fandom, days, auto: auto ? Number(auto) : 0, photo: photo ? Number(photo) : 0, photoUrl: '', sourceUrl });
+    items.push({
+      name,
+      fandom,
+      days: parseDaysFromText(full),
+      auto: parsePriceNear(full, 'Autograph'),
+      photo: parsePriceNear(full, 'Photo Op'),
+      photoUrl: extractFirstImageNear(text, name),
+      sourceUrl
+    });
   }
+
+  // Strategy 3: fallback for all-guests pages where each card appears as Name / fandom / Appearing.
+  for (let i = 0; i < lines.length - 1; i++) {
+    if (!wordsLookLikeName(lines[i])) continue;
+    const windowText = lines.slice(i, i + 5).join('\n');
+    if (!/Appearing\s*:/i.test(windowText)) continue;
+    items.push({
+      name: lines[i],
+      fandom: lines[i + 1] && !/^Appearing/i.test(lines[i + 1]) ? lines[i + 1] : 'Guest',
+      days: parseDaysFromText(windowText),
+      auto: parsePriceNear(windowText, 'Autograph'),
+      photo: parsePriceNear(windowText, 'Photo Op'),
+      photoUrl: extractFirstImageNear(text, lines[i]),
+      sourceUrl
+    });
+  }
+
   return uniqByName(items);
 }
 
+function extractFirstImageNear(raw, name) {
+  if (!raw || !name) return '';
+  const idx = raw.toLowerCase().indexOf(name.toLowerCase());
+  const start = idx >= 0 ? Math.max(0, idx - 2000) : 0;
+  const end = idx >= 0 ? Math.min(raw.length, idx + 2000) : Math.min(raw.length, 3000);
+  const chunk = raw.slice(start, end);
+  const urls = [...chunk.matchAll(/https?:\/\/[^\s"')]+\.(?:png|jpg|jpeg|webp)(?:\?[^\s"')]+)?/gi)].map(m => m[0]);
+  return urls.find(u => /knect365|imagedelivery|fanexpo|imgix|uploads/i.test(u)) || urls[0] || '';
+}
+
 function parseGenericGuests(text, sourceUrl) {
-  const items = [];
   const clean = normalizeText(text);
   const lines = clean.split('\n').map(x => x.trim()).filter(Boolean);
-  const bad = /privacy|cookie|tickets|newsletter|contact|sitemap|copyright|countdown|policies|accessibility|terms|buy tickets|sign up|show info/i;
+  const items = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].replace(/^#+\s*/, '').trim();
-    if (bad.test(line)) continue;
-    if (line.length < 4 || line.length > 60) continue;
-    if (!/^[A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+(?:\s+[A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+){1,4}$/.test(line)) continue;
-    items.push({ name: line, fandom: 'Guest', days: ['TBD'], auto: 0, photo: 0, photoUrl: '', sourceUrl });
+    if (wordsLookLikeName(line)) {
+      const next = lines[i + 1] && !wordsLookLikeName(lines[i + 1]) ? lines[i + 1] : 'Guest';
+      items.push({ name: line, fandom: next, days: ['TBD'], auto: 0, photo: 0, photoUrl: extractFirstImageNear(text, line), sourceUrl });
+    }
   }
   return uniqByName(items);
 }
@@ -143,19 +253,49 @@ function mergeGuests(existing = [], fresh = []) {
   for (const g of fresh) {
     const key = String(g.name || '').toLowerCase();
     if (!map.has(key)) {
-      map.set(key, { id: crypto.randomUUID(), must: false, hidden: false, img: initials(g.name), schedule: 'TBD', source: 'Refresh import', ...g });
+      map.set(key, {
+        id: safeId(),
+        must: false,
+        hidden: false,
+        img: initials(g.name),
+        schedule: 'TBD',
+        source: 'Refresh import',
+        ...g
+      });
       changes.push({ type: 'newGuest', name: g.name });
-    } else {
-      const old = map.get(key);
-      const patch = { ...old };
-      if (g.days?.length && JSON.stringify(g.days) !== JSON.stringify(old.days)) { patch.days = g.days; changes.push({ type: 'daysChanged', name: g.name, from: old.days, to: g.days }); }
-      if (g.auto && g.auto !== old.auto) { changes.push({ type: 'autoChanged', name: g.name, from: old.auto || 'TBD', to: g.auto }); patch.auto = g.auto; }
-      if (g.photo && g.photo !== old.photo) { changes.push({ type: 'photoChanged', name: g.name, from: old.photo || 'TBD', to: g.photo }); patch.photo = g.photo; }
-      if (g.photoUrl && !old.photoUrl) { patch.photoUrl = g.photoUrl; changes.push({ type: 'photoAdded', name: g.name }); }
-      map.set(key, patch);
+      continue;
     }
+    const old = map.get(key);
+    const patch = { ...old };
+    if (g.fandom && g.fandom !== 'Guest' && g.fandom !== old.fandom) patch.fandom = g.fandom;
+    if (Array.isArray(g.days) && g.days.length && JSON.stringify(g.days) !== JSON.stringify(old.days)) {
+      patch.days = g.days;
+      changes.push({ type: 'daysChanged', name: g.name, from: old.days, to: g.days });
+    }
+    if (g.auto && g.auto !== old.auto) {
+      patch.auto = g.auto;
+      changes.push({ type: 'autoChanged', name: g.name, from: old.auto || 'TBD', to: g.auto });
+    }
+    if (g.photo && g.photo !== old.photo) {
+      patch.photo = g.photo;
+      changes.push({ type: 'photoChanged', name: g.name, from: old.photo || 'TBD', to: g.photo });
+    }
+    if (g.photoUrl && !old.photoUrl) {
+      patch.photoUrl = g.photoUrl;
+      changes.push({ type: 'photoAdded', name: g.name });
+    }
+    map.set(key, patch);
   }
   return { guests: Array.from(map.values()), changes };
+}
+
+function debugSample(text) {
+  const needle = ['Christopher Judge', 'Karl Urban', 'Ron Perlman', 'Appearing:', 'All Guests'];
+  for (const n of needle) {
+    const idx = text.toLowerCase().indexOf(n.toLowerCase());
+    if (idx >= 0) return text.slice(Math.max(0, idx - 300), Math.min(text.length, idx + 900));
+  }
+  return text.slice(0, 1200);
 }
 
 export default async function handler(req, res) {
@@ -173,10 +313,10 @@ export default async function handler(req, res) {
   if (!source.guestUrl && !source.mainUrl) return res.status(400).json({ error: 'Convention needs a website or guest URL' });
 
   const guestPage = await fetchPage(source.guestUrl || source.mainUrl);
-  const mainPage = source.mainUrl ? await fetchPage(source.mainUrl) : { text: '', method: 'none' };
+  const mainPage = source.mainUrl ? await fetchPage(source.mainUrl) : { raw: '', text: '', method: 'none' };
 
   const parser = source.parser === 'fanexpo' ? parseFanExpoGuests : parseGenericGuests;
-  const freshGuests = parser(guestPage.text, source.guestUrl || source.mainUrl);
+  const freshGuests = parser(guestPage.text || guestPage.raw, source.guestUrl || source.mainUrl);
   const { guests, changes } = mergeGuests(convention.guests || [], freshGuests);
   const info = parseDatesVenue(mainPage.text || guestPage.text, convention);
 
@@ -198,6 +338,7 @@ export default async function handler(req, res) {
     parsedGuestCount: freshGuests.length,
     methods: { guestPage: guestPage.method, mainPage: mainPage.method },
     warnings: [guestPage.warning, mainPage.warning].filter(Boolean),
-    hasFirecrawlKey: Boolean(FIRECRAWL_API_KEY)
+    hasFirecrawlKey: Boolean(FIRECRAWL_API_KEY),
+    debugSample: freshGuests.length ? '' : debugSample(guestPage.text || guestPage.raw || '')
   });
 }
