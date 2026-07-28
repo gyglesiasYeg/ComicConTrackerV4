@@ -1,16 +1,89 @@
-const knownPhotos={
- 'christopher judge':'https://imagedelivery.net/VTBDqFF18S3r8M9B-TFWuA/c6be3e1c-a4ad-4d3f-ecdf-6557a359ac00/public',
- 'karl urban':'https://knect365.imgix.net/uploads/KARL-URBAN-BOYS-400x400-5c27173a10f70749384ecabf2b9e7b40.png?auto=format&fit=max&w=462&h=462&dpr=1',
- 'ron perlman':'https://imagedelivery.net/VTBDqFF18S3r8M9B-TFWuA/e04eda41-97d8-496d-0f19-e1dc1d0afa00/public'
+// Comic Con Tracker V9 - Stable Known Person Photo API
+// Important: this endpoint DOES NOT scrape convention pages for photos.
+// It only uses verified known URLs and Wikidata human entity P18 images.
+
+const KNOWN_PHOTOS = {
+  'christopher judge': 'https://imagedelivery.net/VTBDqFF18S3r8M9B-TFWuA/c6be3e1c-a4ad-4d3f-ecdf-6557a359ac00/public',
+  'karl urban': 'https://knect365.imgix.net/uploads/KARL-URBAN-BOYS-400x400-5c27173a10f70749384ecabf2b9e7b40.png?auto=format&fit=max&w=462&h=462&dpr=1',
+  'ron perlman': 'https://imagedelivery.net/VTBDqFF18S3r8M9B-TFWuA/e04eda41-97d8-496d-0f19-e1dc1d0afa00/public',
+  'nicolas cage': 'https://commons.wikimedia.org/wiki/Special:FilePath/Nicolas%20Cage%20Deauville%202013%202.jpg?width=500',
+  'nicholas cage': 'https://commons.wikimedia.org/wiki/Special:FilePath/Nicolas%20Cage%20Deauville%202013%202.jpg?width=500',
+  'john cena': 'https://commons.wikimedia.org/wiki/Special:FilePath/John%20Cena%20by%20Gage%20Skidmore.jpg?width=500'
 };
-const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
-function bad(url=''){const u=String(url).toLowerCase();return !u||['logo','favicon','icon','badge','banner','header','wordmark','character','poster','cover','placeholder','share-image','og-image'].some(x=>u.includes(x))}
-async function j(url){const r=await fetch(url,{headers:{'user-agent':'ComicConTracker/8.0 known-person-photo finder'}});if(!r.ok)throw new Error(String(r.status));return r.json()}
-function commons(file){return file?`https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=500`:''}
-function human(ent){const claims=ent?.claims||{};return (claims.P31||[]).some(c=>c.mainsnak?.datavalue?.value?.id==='Q5')}
-function imageClaim(ent){return ent?.claims?.P18?.[0]?.mainsnak?.datavalue?.value||''}
-function occupationOk(ent){const claims=ent?.claims||{};const accepted=new Set(['Q33999','Q10800557','Q28389','Q36180','Q214917','Q36834','Q6625963','Q15981151','Q49757','Q2526255','Q1028181','Q7042855']);return (claims.P106||[]).some(c=>accepted.has(c.mainsnak?.datavalue?.value?.id))}
-async function wikidata(name){const key=norm(name);if(knownPhotos[key])return{photoUrl:knownPhotos[key],source:'known',confidence:'high'};const search=await j(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(name)}&language=en&format=json&limit=8&origin=*`);const ids=(search.search||[]).map(x=>x.id).filter(Boolean);if(!ids.length)return null;const ents=await j(`https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${ids.join('|')}&languages=en&props=claims|labels|descriptions&format=json&origin=*`);for(const id of ids){const e=ents.entities?.[id];if(!e||!human(e))continue;const label=e.labels?.en?.value||'';const desc=e.descriptions?.en?.value||'';const labelMatch=norm(label)===key||norm(label).includes(key)||key.includes(norm(label));if(!labelMatch)continue;const file=imageClaim(e);if(file){const photo=commons(file);if(!bad(photo))return{photoUrl:photo,source:`wikidata:${id}`,confidence:occupationOk(e)?'high':'medium',description:desc}}}return null}
-async function wiki(name){const search=await j(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(name)}&format=json&origin=*&srlimit=5`);for(const hit of search.query?.search||[]){const title=hit.title;if(!title||!norm(title).includes(norm(name).split(' ')[0]))continue;try{const sum=await j(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`);const desc=String(sum.description||'');const type=String(sum.type||'');const img=sum.originalimage?.source||sum.thumbnail?.source||'';if(type==='standard'&&img&&!bad(img)&&/actor|actress|artist|writer|author|comedian|director|producer|illustrator|voice|performer|person/i.test(desc))return{photoUrl:img,source:`wikipedia:${title}`,confidence:'medium',description:desc}}catch{}}
-return null}
-export default async function handler(req,res){if(req.method!=='POST')return res.status(405).json({error:'POST only'});const {guest,cache}=req.body||{};const name=guest?.name||'';if(!name)return res.status(400).json({error:'Missing guest name'});const k=norm(name);if(cache?.[k]&&!bad(cache[k]))return res.status(200).json({photoUrl:cache[k],source:'cache',confidence:'cached'});try{const wd=await wikidata(name);if(wd?.photoUrl)return res.status(200).json(wd);const wp=await wiki(name);if(wp?.photoUrl)return res.status(200).json(wp);res.status(200).json({photoUrl:'',source:'none',confidence:'not-found'})}catch(e){res.status(200).json({photoUrl:'',source:'error',confidence:'error',error:e.message})}}
+
+function norm(s = '') {
+  let n = String(s).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (n === 'nicholas cage') n = 'nicolas cage';
+  return n;
+}
+function rawNorm(s = '') {
+  return String(s).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function badImageUrl(url = '') {
+  const u = String(url || '').toLowerCase();
+  if (!u) return true;
+  return ['logo','favicon','icon','badge','banner','header','wordmark','sprite','placeholder','poster','cover','character','share-image','og-image','default','no-image'].some(x => u.includes(x));
+}
+async function getJson(url) {
+  const res = await fetch(url, { headers: { 'user-agent': 'ComicConTracker/9.0 stable-known-person-photo', 'accept': 'application/json' } });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+function commons(fileName) {
+  return fileName ? `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(fileName)}?width=500` : '';
+}
+function isHuman(entity) {
+  return (entity?.claims?.P31 || []).some(c => c.mainsnak?.datavalue?.value?.id === 'Q5');
+}
+function p18(entity) {
+  return entity?.claims?.P18?.[0]?.mainsnak?.datavalue?.value || '';
+}
+function nameMatches(label, requested) {
+  const a = norm(label);
+  const b = norm(requested);
+  if (a === b || a.includes(b) || b.includes(a)) return true;
+  const ar = rawNorm(label).replace(/nicholas/g, 'nicolas');
+  const br = rawNorm(requested).replace(/nicholas/g, 'nicolas');
+  return ar === br || ar.includes(br) || br.includes(ar);
+}
+async function wikidataPhoto(name) {
+  const searchName = norm(name) === 'nicolas cage' ? 'Nicolas Cage' : name;
+  const search = await getJson(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(searchName)}&language=en&format=json&limit=8&origin=*`);
+  const ids = (search.search || []).map(x => x.id).filter(Boolean);
+  if (!ids.length) return null;
+  const data = await getJson(`https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${ids.join('|')}&languages=en&props=claims|labels|descriptions&format=json&origin=*`);
+  for (const id of ids) {
+    const e = data.entities?.[id];
+    if (!e || !isHuman(e)) continue;
+    const label = e.labels?.en?.value || '';
+    if (!nameMatches(label, name)) continue;
+    const imageFile = p18(e);
+    if (!imageFile) continue;
+    const photoUrl = commons(imageFile);
+    if (!badImageUrl(photoUrl)) {
+      return { photoUrl, source: `wikidata:${id}`, confidence: 'high', label, description: e.descriptions?.en?.value || '' };
+    }
+  }
+  return null;
+}
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
+  const { guest, cache } = req.body || {};
+  const name = guest?.name || '';
+  if (!name) return res.status(400).json({ error: 'Missing guest name' });
+
+  const key = norm(name);
+  const cached = cache?.[key] || cache?.[rawNorm(name)] || '';
+  if (cached && !badImageUrl(cached)) return res.status(200).json({ photoUrl: cached, source: 'cache', confidence: 'cached' });
+
+  const known = KNOWN_PHOTOS[key] || KNOWN_PHOTOS[rawNorm(name)] || '';
+  if (known && !badImageUrl(known)) return res.status(200).json({ photoUrl: known, source: 'known-photo-library', confidence: 'high' });
+
+  try {
+    const found = await wikidataPhoto(name);
+    if (found?.photoUrl) return res.status(200).json(found);
+    return res.status(200).json({ photoUrl: '', source: 'wikidata', confidence: 'not-found' });
+  } catch (e) {
+    return res.status(200).json({ photoUrl: '', source: 'wikidata-error', confidence: 'error', error: e.message });
+  }
+}
