@@ -11,7 +11,7 @@ const KNOWN={
 function norm(s=''){let n=String(s).toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();if(n==='nicholas cage')n='nicolas cage';return n}
 function raw(s=''){return String(s).toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim()}
 function bad(url=''){const u=String(url||'').toLowerCase();return !u||['logo','favicon','icon','badge','banner','header','wordmark','sprite','placeholder','poster','cover','character','share-image','og-image','default','no-image'].some(x=>u.includes(x))}
-async function json(url){const r=await fetch(url,{headers:{'user-agent':'ComicConTracker/9.3','accept':'application/json'}});if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
+async function json(url){const r=await fetch(url,{headers:{'user-agent':'ComicConTracker/9.6','accept':'application/json'}});if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
 const commons=f=>f?`https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(f)}?width=500`:'';
 function human(e){return(e?.claims?.P31||[]).some(c=>c.mainsnak?.datavalue?.value?.id==='Q5')}
 function p18(e){return e?.claims?.P18?.[0]?.mainsnak?.datavalue?.value||''}
