@@ -24,9 +24,14 @@ const knownSources = {
   }
 };
 
-const franchiseTitleWords = [
-  'the mandalorian','battlestar galactica','star wars','star trek','game of thrones','lord of the rings','the lord of the rings','the boys','god of war','fallout','hellboy','sons of anarchy','five nights at freddy','five nights at freddy\'s','borderlands','street fighter','ghost of tsushima','he-man','masters of the universe','teenage mutant ninja turtles','marvel','dc','archie','godzilla','ahsoka','dceased','zombie king','handmaid','handmaid\'s tale','modern asian family','rhymes with comics','guest info','pricing','photo ops','autograph sessions','buy tickets','learn more','main events','comic creators','featured guests','special guests','also appearing','animation voices','anime guests','gaming stars','celebrities','cosplay','newsletter','accessibility','privacy policy','cookie policy','show hours'
+const nonPersonPhrases = [
+  'the mandalorian','battlestar galactica','broadway star','mean girls','hazbin hotel','star wars','star trek','game of thrones','lord of the rings','the lord of the rings','the boys','god of war','fallout','hellboy','sons of anarchy','five nights at freddy','five nights at freddys','borderlands','street fighter','ghost of tsushima','he man','masters of the universe','teenage mutant ninja turtles','marvel','dc','archie','godzilla','ahsoka','dceased','zombie king','the handmaids tale','handmaids tale','modern asian family','rhymes with comics','legendary creator','legendary artist','cover artist','comic artist','voice actor','anime guest','gaming star','superstar guest','celebrity guest','guest info','pricing','photo ops','autograph sessions','buy tickets','learn more','main events','comic creators','featured guests','special guests','also appearing','animation voices','anime guests','gaming stars','celebrities','cosplay','newsletter','accessibility','privacy policy','cookie policy','show hours','faq','sitemap','contact us','terms of participation','safety security wellness',
+  'artist alley','official hotel','media partners','show partners','volunteer team','guest request','ticket types','family passes','child passes','single day','multi day','ultimate fan package','vip package'
 ];
+
+const roleOnlyWords = new Set([
+  'actor','actress','author','artist','animator','editor','writer','creator','illustrator','penciller','colorist','publisher','musician','designer','puppeteer','panelist','cosplayer','influencer','director','producer','star','legend','legendary','guest','celebrity'
+]);
 
 function normalizeText(s = '') {
   return String(s)
@@ -34,6 +39,8 @@ function normalizeText(s = '') {
     .replace(/\t/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&nbsp;/g, ' ')
+    .replace(/&#039;/g, "'")
+    .replace(/&quot;/g, '"')
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, '\n')
@@ -56,28 +63,33 @@ function canonical(s = '') {
   return String(s).toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-function isFranchiseOrUiText(line = '') {
+function isNonPersonText(line = '') {
   const c = canonical(line);
   if (!c) return true;
-  if (franchiseTitleWords.some(w => c === canonical(w) || c.includes(canonical(w)))) return true;
-  if (/\b(tickets|newsletter|privacy|cookie|accessibility|appearing|pricing|autograph|photo op|buy now|learn more|show hours|all guests|guests|events|cosplay|anime|gaming|comics|policies)\b/i.test(c)) return true;
+  if (nonPersonPhrases.some(w => c === canonical(w) || c.includes(canonical(w)))) return true;
+  if (/\b(tickets|newsletter|privacy|cookie|accessibility|appearing|pricing|autograph|photo op|buy now|learn more|show hours|all guests|events|cosplay|anime|gaming|comics|policies|schedule|faq|hotel|sponsor|partner|exhibitor|shop|store|profile|bio|disclaimer)\b/i.test(c)) return true;
   return false;
 }
 
 function looksLikePersonName(line = '') {
   const s = String(line).trim().replace(/^#+\s*/, '').replace(/[|•]/g, ' ').trim();
-  if (isFranchiseOrUiText(s)) return false;
+  if (isNonPersonText(s)) return false;
   if (s.length < 5 || s.length > 55) return false;
-  if (/\d|\$|https?:|@|\(|\)|:|\/|\\/.test(s)) return false;
+  if (/\d|\$|https?:|@|\(|\)|:|\/|\\|—|–/.test(s)) return false;
   const parts = s.split(/\s+/).filter(Boolean);
   if (parts.length < 2 || parts.length > 4) return false;
-  const smallWords = new Set(['de','da','del','di','du','van','von','la','le','the']);
+  const smallWords = new Set(['de','da','del','di','du','van','von','la','le']);
   let capCount = 0;
+  let roleCount = 0;
   for (const p of parts) {
-    if (smallWords.has(p.toLowerCase())) continue;
+    const lower = p.toLowerCase().replace(/[^a-z]/g, '');
+    if (smallWords.has(lower)) continue;
+    if (roleOnlyWords.has(lower)) roleCount++;
     if (!/^[A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+$/.test(p)) return false;
     capCount++;
   }
+  // Reject role-only title phrases like "Broadway Star" or "Voice Actor".
+  if (roleCount >= Math.max(1, parts.length - 1)) return false;
   return capCount >= 2;
 }
 
@@ -96,7 +108,7 @@ function uniqByName(items) {
 async function fetchDirect(url) {
   const res = await fetch(url, {
     headers: {
-      'user-agent': 'Mozilla/5.0 ComicConTracker/4.2',
+      'user-agent': 'Mozilla/5.0 ComicConTracker/4.3',
       'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
     }
   });
@@ -158,11 +170,72 @@ function parseDaysFromText(text) {
 function extractFirstImageNear(raw, name) {
   if (!raw || !name) return '';
   const idx = raw.toLowerCase().indexOf(name.toLowerCase());
-  const start = idx >= 0 ? Math.max(0, idx - 2500) : 0;
-  const end = idx >= 0 ? Math.min(raw.length, idx + 2500) : Math.min(raw.length, 3000);
+  const start = idx >= 0 ? Math.max(0, idx - 3500) : 0;
+  const end = idx >= 0 ? Math.min(raw.length, idx + 3500) : Math.min(raw.length, 5000);
   const chunk = raw.slice(start, end);
-  const urls = [...chunk.matchAll(/https?:\/\/[^\s"')]+\.(?:png|jpg|jpeg|webp)(?:\?[^\s"')]+)?/gi)].map(m => m[0]);
-  return urls.find(u => /knect365|imagedelivery|fanexpo|imgix|uploads/i.test(u)) || urls[0] || '';
+  const urls = [...chunk.matchAll(/https?:\/\/[^\s"')]+(?:png|jpg|jpeg|webp)(?:\?[^\s"')]+)?/gi)].map(m => m[0]);
+  return urls.find(u => /knect365|imagedelivery|fanexpo|imgix|uploads|cloudfront|wp-content/i.test(u)) || urls[0] || '';
+}
+
+function extractGuestLinks(raw) {
+  const links = new Set();
+  const re = /https?:\/\/fanexpohq\.com\/[^\s"')]+\/our-guests\/[^\s"')]+/gi;
+  let m;
+  while ((m = re.exec(String(raw || '')))) {
+    const url = m[0].replace(/[#?].*$/, '').replace(/\/$/, '/')
+    links.add(url);
+  }
+  return Array.from(links);
+}
+
+function slugFromGuestLink(url) {
+  const m = String(url).match(/\/our-guests\/([^\/]+)\//i);
+  return m ? m[1].replace(/-/g, ' ') : '';
+}
+
+function parseNameFromDetail(text, fallbackSlug) {
+  const lines = normalizeText(text).split('\n').map(x => x.trim()).filter(Boolean);
+  for (const line of lines.slice(0, 40)) {
+    if (looksLikePersonName(line)) return line;
+  }
+  const guess = fallbackSlug.split(/\s+/).map(w => w ? w[0].toUpperCase() + w.slice(1) : '').join(' ');
+  return looksLikePersonName(guess) ? guess : '';
+}
+
+async function enrichGuestsWithDetailPages(guests, raw, sourceUrl) {
+  // This improves photos/prices by opening individual FAN EXPO guest pages found in the scraped links.
+  // Limit protects refresh speed and Firecrawl credits.
+  const links = extractGuestLinks(raw).slice(0, 60);
+  if (!links.length) return { guests, detailPagesChecked: 0 };
+
+  const byName = new Map(guests.map(g => [canonical(g.name), g]));
+  let checked = 0;
+  const concurrency = 5;
+  let index = 0;
+
+  async function worker() {
+    while (index < links.length) {
+      const url = links[index++];
+      try {
+        const detail = await fetchPage(url);
+        checked++;
+        const slug = slugFromGuestLink(url);
+        const name = parseNameFromDetail(detail.text || detail.raw, slug);
+        if (!name || !looksLikePersonName(name)) continue;
+        const key = canonical(name);
+        const block = detail.text || detail.raw || '';
+        const existing = byName.get(key) || { name, fandom: 'Guest', days: ['TBD'], auto: 0, photo: 0, photoUrl: '', sourceUrl: url };
+        existing.days = parseDaysFromText(block);
+        existing.auto = parsePriceNear(block, 'Autograph') || existing.auto || 0;
+        existing.photo = parsePriceNear(block, 'Photo Op') || existing.photo || 0;
+        existing.photoUrl = extractFirstImageNear(detail.raw || block, name) || existing.photoUrl || '';
+        existing.sourceUrl = url;
+        byName.set(key, existing);
+      } catch {}
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return { guests: Array.from(byName.values()), detailPagesChecked: checked };
 }
 
 function parseFanExpoGuests(text, sourceUrl) {
@@ -174,7 +247,6 @@ function parseFanExpoGuests(text, sourceUrl) {
   // Strict parser: only build a guest from a nearby person-name line before an Appearing line.
   for (let i = 0; i < lines.length; i++) {
     if (!/^Appearing\s*:/i.test(lines[i])) continue;
-
     let name = '';
     let nameIndex = -1;
     for (let j = i - 1; j >= Math.max(0, i - 8); j--) {
@@ -186,9 +258,9 @@ function parseFanExpoGuests(text, sourceUrl) {
     }
     if (!name) continue;
 
-    const between = lines.slice(nameIndex + 1, i).filter(x => !isFranchiseOrUiText(x) || /^[A-Z0-9 '&.-]{3,80}$/.test(x));
-    let fandom = between.find(x => x && !looksLikePersonName(x) && !/^Pricing$/i.test(x)) || 'Guest';
-    if (isFranchiseOrUiText(fandom) && fandom.length < 4) fandom = 'Guest';
+    const between = lines.slice(nameIndex + 1, i).filter(x => x && !looksLikePersonName(x) && !/^(Pricing|Guest Info|Check Out Their Bio)$/i.test(x));
+    let fandom = between.find(x => !isNonPersonText(x)) || between[0] || 'Guest';
+    if (isNonPersonText(fandom) && fandom.length < 6) fandom = 'Guest';
     const block = lines.slice(Math.max(0, nameIndex), Math.min(lines.length, i + 18)).join('\n');
     items.push({
       name,
@@ -201,7 +273,7 @@ function parseFanExpoGuests(text, sourceUrl) {
     });
   }
 
-  // Compact fallback: only for a Name + title + Appearing pattern, with strong filtering.
+  // Compact fallback: Name + title + Appearing pattern, still strict on name.
   const compact = clean.replace(/\n+/g, ' ');
   const re = /([A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+\s+[A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+(?:\s+[A-ZÀ-ÿ][A-Za-zÀ-ÿ'.-]+){0,2})\s+(.{3,90}?)\s+Appearing\s*:\s*(Fri|Sat|Sun|Thu|Friday|Saturday|Sunday|Thursday|TBD)(?:,?\s*(Fri|Sat|Sun|Thu|Friday|Saturday|Sunday|Thursday))*[^.]{0,80}/gi;
   let m;
@@ -212,7 +284,7 @@ function parseFanExpoGuests(text, sourceUrl) {
     const fandom = (m[2] || 'Guest').replace(/Pricing.*$/i, '').trim();
     items.push({
       name,
-      fandom: isFranchiseOrUiText(fandom) ? fandom : fandom || 'Guest',
+      fandom: fandom || 'Guest',
       days: parseDaysFromText(full),
       auto: parsePriceNear(full, 'Autograph'),
       photo: parsePriceNear(full, 'Photo Op'),
@@ -232,7 +304,7 @@ function parseGenericGuests(text, sourceUrl) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].replace(/^#+\s*/, '').trim();
     if (!looksLikePersonName(line)) continue;
-    const next = lines[i + 1] && !looksLikePersonName(lines[i + 1]) && !isFranchiseOrUiText(lines[i + 1]) ? lines[i + 1] : 'Guest';
+    const next = lines[i + 1] && !looksLikePersonName(lines[i + 1]) && !isNonPersonText(lines[i + 1]) ? lines[i + 1] : 'Guest';
     items.push({ name: line, fandom: next, days: ['TBD'], auto: 0, photo: 0, photoUrl: extractFirstImageNear(raw, line), sourceUrl });
   }
   return uniqByName(items);
@@ -249,7 +321,7 @@ function shouldDropExistingImportedGuest(g) {
   const source = String(g.source || '').toLowerCase();
   const imported = source.includes('refresh') || source.includes('import');
   if (!imported) return false;
-  return !looksLikePersonName(g.name);
+  return !looksLikePersonName(g.name) || isNonPersonText(g.name);
 }
 
 function mergeGuests(existing = [], fresh = []) {
@@ -313,7 +385,14 @@ export default async function handler(req, res) {
   const guestPage = await fetchPage(source.guestUrl || source.mainUrl);
   const mainPage = source.mainUrl ? await fetchPage(source.mainUrl) : { raw: '', text: '', method: 'none' };
   const parser = source.parser === 'fanexpo' ? parseFanExpoGuests : parseGenericGuests;
-  const freshGuests = parser(guestPage.text || guestPage.raw, source.guestUrl || source.mainUrl);
+  let freshGuests = parser(guestPage.text || guestPage.raw, source.guestUrl || source.mainUrl);
+  let detailPagesChecked = 0;
+  if (source.parser === 'fanexpo' && FIRECRAWL_API_KEY) {
+    const enriched = await enrichGuestsWithDetailPages(freshGuests, guestPage.raw || guestPage.text, source.guestUrl || source.mainUrl);
+    freshGuests = uniqByName(enriched.guests);
+    detailPagesChecked = enriched.detailPagesChecked;
+  }
+
   const { guests, changes } = mergeGuests(convention.guests || [], freshGuests);
   const info = parseDatesVenue(mainPage.text || guestPage.text, convention);
 
@@ -336,6 +415,7 @@ export default async function handler(req, res) {
     methods: { guestPage: guestPage.method, mainPage: mainPage.method },
     warnings: [guestPage.warning, mainPage.warning].filter(Boolean),
     hasFirecrawlKey: Boolean(FIRECRAWL_API_KEY),
+    detailPagesChecked,
     debugSample: freshGuests.length ? '' : debugSample(guestPage.text || guestPage.raw || '')
   });
 }
