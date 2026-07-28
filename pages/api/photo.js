@@ -1,6 +1,7 @@
 // Comic Con Tracker V9 - Stable Known Person Photo API
 // Important: this endpoint DOES NOT scrape convention pages for photos.
 // It only uses verified known URLs and Wikidata human entity P18 images.
+// IMDb official API can be added later if you subscribe through AWS Data Exchange; this file does not scrape IMDb pages.
 
 const KNOWN_PHOTOS = {
   'christopher judge': 'https://imagedelivery.net/VTBDqFF18S3r8M9B-TFWuA/c6be3e1c-a4ad-4d3f-ecdf-6557a359ac00/public',
@@ -8,7 +9,8 @@ const KNOWN_PHOTOS = {
   'ron perlman': 'https://imagedelivery.net/VTBDqFF18S3r8M9B-TFWuA/e04eda41-97d8-496d-0f19-e1dc1d0afa00/public',
   'nicolas cage': 'https://commons.wikimedia.org/wiki/Special:FilePath/Nicolas%20Cage%20Deauville%202013%202.jpg?width=500',
   'nicholas cage': 'https://commons.wikimedia.org/wiki/Special:FilePath/Nicolas%20Cage%20Deauville%202013%202.jpg?width=500',
-  'john cena': 'https://commons.wikimedia.org/wiki/Special:FilePath/John%20Cena%20by%20Gage%20Skidmore.jpg?width=500'
+  'john cena': 'https://commons.wikimedia.org/wiki/Special:FilePath/John%20Cena%20by%20Gage%20Skidmore.jpg?width=500',
+  'dean norris': 'https://commons.wikimedia.org/wiki/Special:FilePath/Dean%20Norris%20by%20Gage%20Skidmore%202.jpg?width=500'
 };
 
 function norm(s = '') {
