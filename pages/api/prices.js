@@ -1,4 +1,4 @@
-// Comic Con Tracker V15.9 - universal autograph/photo-op price updater
+// Comic Con Tracker V16.0 - universal autograph/photo-op price updater
 // Updates only guest.auto and guest.photo. It does not change guests, photos, days, filtering, locked lists, or Known For.
 
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || '';
@@ -63,7 +63,7 @@ async function scrape(url) {
   }
 
   try {
-    const r = await fetch(url,{headers:{'user-agent':'ComicConTracker/15.9 price-updater'}});
+    const r = await fetch(url,{headers:{'user-agent':'ComicConTracker/16.0 price-updater'}});
     if(!r.ok) throw new Error(String(r.status));
     return { raw: await r.text(), method:'direct' };
   } catch(e) {
