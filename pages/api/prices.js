@@ -63,7 +63,7 @@ async function scrape(url) {
   }
 
   try {
-    const r = await fetch(url,{headers:{'user-agent':'ComicConTracker/16.0 price-updater'}});
+    const r = await fetch(url,{headers:{'user-agent':'ComicConTracker/16.1 price-updater'}});
     if(!r.ok) throw new Error(String(r.status));
     return { raw: await r.text(), method:'direct' };
   } catch(e) {
@@ -219,7 +219,7 @@ export default async function handler(req,res){
   const checked = new Set();
   let best={auto:0,photo:0,source:'not-found'};
 
-  for (const url of likelyUrls(convention, guest).slice(0, 12)) {
+  for (const url of likelyUrls(convention, guest).slice(0, 5)) {
     if (!url || checked.has(url)) continue;
     checked.add(url);
 
@@ -228,7 +228,7 @@ export default async function handler(req,res){
     const p = extractPrices(pg.raw);
     if (p.auto || p.photo) return res.status(200).json({...p,source:url,methods});
 
-    for (const link of extractLinks(pg.raw, url, guest)) {
+    for (const link of extractLinks(pg.raw, url, guest).slice(0, 3)) {
       if (checked.has(link)) continue;
       checked.add(link);
       const detail = await scrape(link);
