@@ -1,97 +1,34 @@
-// Comic Con Tracker V18.0 Fresh Refresh Engine
-// Conservative by design: if a guest page cannot be verified as current-year, it returns no guests instead of importing past favourites or page labels.
+// Comic Con Tracker V18.1 - current-card verified refresh engine
+// Conservative rule: if current guests cannot be verified from a current event guest context, return guests: [].
 const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || '';
-
+const VERSION = 'fresh-current-card-verified-v18.1';
 const MONTH = {jan:0,january:0,feb:1,february:1,mar:2,march:2,apr:3,april:3,may:4,jun:5,june:5,jul:6,july:6,aug:7,august:7,sep:8,sept:8,september:8,oct:9,october:9,nov:10,november:10,dec:11,december:11};
-const JUNK_NAME = /\b(photo ops?|photo opportunities|autographs?|autograph sessions?|main events?|hq events?|getting here|fan ambassador|fan meetups?|stay up|sign up|join us|order forms?|show partners?|show guides?|partners?|guides?|customer service|privacy|cookie|terms|contact us|about us|back to top|learn more|read on|travel|hotels?|floor plan|mobile app|discounts?|coupons?|newsletter|tickets?|buy|shop|merch|sponsor|parking|faq|menu|navigation|volunteer|application|apply|login|account|service|show info|see all|cosplay|gaming|anime activations?|artist alley|professional creators?|comic creators?|animation voices?|voice actors?|sci-fi|fantasy|guest archive|past guests?|previous guests?|alumni|celebrities?|guests?)\b/i;
-const PAST_MARKER = /\b(past favorite guests?|past favourite guests?|past guests?|previous guests?|guest archive|archives?|alumni|former guests?|guest history|previous years?|from 20\d{2})\b/i;
-const BAD_URL = /past|archive|archives|previous|alumni|history|privacy|cookie|terms|login|account|shop|cart|newsletter|sponsor|exhibitor|volunteer|media|press|floor-plan|mobile-app|hotel|travel|parking|contact|show-guides|showguides|partners/i;
-const POSSIBLE_GUEST_URL = /guest|guests|celebrity|celebrities|comic-creator|creators|voice|actor|artist|author|professional|anime/i;
-
-function norm(s=''){return String(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/&amp;/g,'&').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim().replace(/^nicholas cage$/,'nicolas cage')}
-function cleanHtml(s=''){return String(s).replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<svg[\s\S]*?<\/svg>/gi,' ').replace(/<nav[\s\S]*?<\/nav>/gi,' ').replace(/<header[\s\S]*?<\/header>/gi,' ').replace(/<footer[\s\S]*?<\/footer>/gi,' ').replace(/<[^>]+>/g,'\n').replace(/&amp;/g,'&').replace(/&nbsp;/g,' ').replace(/&#x27;|&#39;/g,"'").replace(/&quot;/g,'"').replace(/\r/g,'\n').replace(/\n{3,}/g,'\n\n').trim()}
+const BAD_NAME=/\b(photo ops?|photo opportunities|autographs?|autograph sessions?|main events?|hq events?|getting here|plan your visit|panel submission|fan ambassador|fan meetups?|stay up|sign up|join us|order forms?|superfan rewards?|exhibitor rewards?|past exhibitors?|show partners?|show guides?|partners?|guides?|customer service|privacy|cookie|terms|contact us|about us|back to top|learn more|read on|travel|hotels?|floor plan|mobile app|discounts?|coupons?|newsletter|tickets?|buy|shop|merch|sponsor|parking|faq|menu|navigation|volunteer|application|apply|login|account|service|show info|see all|cosplay|gaming|anime activations?|artist alley|professional creators?|comic creators?|animation voices?|voice actors?|sci\s*fi|fantasy|guest archive|past guests?|previous guests?|alumni|celebrities?|guests?|media inquiries?)\b/i;
+const BAD_SOURCE=/artist-alley|professional-creators|suggest-a-guest|\/anime\/?$|anime\/|past|archive|archives|previous|alumni|history|privacy|cookie|terms|login|account|shop|cart|newsletter|sponsor|exhibitor|volunteer|media|press|floor-plan|mobile-app|hotel|travel|parking|contact|show-guides|partners/i;
+const POSSIBLE_GUEST=/\/celebrities\/?$|\/comic-creators\/?$|\/animation-voices\/?$|\/anime-guests\/?$|guest|guests/i;
+const PAST_PAGE=/\b(past favorite guests?|past favourite guests?|favorite guests from past|favourite guests from past|past guests?|previous guests?|guest archive|archives?|alumni|former guests?|guest history|previous years?|from 20\d{2})\b/i;
+const PAGE_CUE=/\b(guest announcements?|announced guests?|current guests?|featured guests?|appearing guests?|appearing at|will be appearing|meet.*guests?|guest lineup|lineup)\b/i;
+const CARD_CUE=/\b(appearing|appearance|autograph|photo op|photo ops|panel|spotlight|q&a|meet and greet|guest details|guest profile|schedule|friday|saturday|sunday|thursday)\b/i;
+function stripUrl(v=''){let s=String(v||'').trim();const h=s.match(/href=["']([^"']+)/i)?.[1];const t=s.match(/title=["']([^"']+)/i)?.[1];s=h||t||s;s=s.replace(/&quot;/g,'').replace(/&amp;/g,'&').replace(/["'<>]/g,'').trim();const m=s.match(/https?:\/\/[^\s,]+/i);return m?m[0].replace(/,$/,''):s}
+const norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/&amp;/g,'&').replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim().replace(/^nicholas cage$/,'nicolas cage');
+function text(s=''){return String(s).replace(/<script[\s\S]*?<\/script>/gi,' ').replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<svg[\s\S]*?<\/svg>/gi,' ').replace(/<nav[\s\S]*?<\/nav>/gi,' ').replace(/<header[\s\S]*?<\/header>/gi,' ').replace(/<footer[\s\S]*?<\/footer>/gi,' ').replace(/<[^>]+>/g,'\n').replace(/&amp;/g,'&').replace(/&nbsp;/g,' ').replace(/&#x27;|&#39;/g,"'").replace(/&quot;/g,'"').replace(/\r/g,'\n').replace(/\n{3,}/g,'\n\n').trim()}
 function guid(){return globalThis.crypto?.randomUUID?crypto.randomUUID():'id-'+Math.random().toString(36).slice(2)+Date.now()}
 function initials(n){return String(n||'?').split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase()||'?'}
-function looksLikePersonName(name=''){
-  const s=String(name||'').replace(/\s+/g,' ').trim();
-  if(/^J\.?\s*R\.?\s*Ward$/i.test(s)||/^JR\s*Ward$/i.test(s)) return true;
-  if(!s||s.length<4||s.length>70||JUNK_NAME.test(s)) return false;
-  if(/[,#$]|\$|https?:|@|:|\/|\\|\||\d{3,}/i.test(s)) return false;
-  const words=s.split(/\s+/).filter(Boolean);
-  if(words.length<2||words.length>5) return false;
-  if(s===s.toUpperCase()) return false;
-  if(!/^[A-Za-zÀ-ÖØ-öø-ÿ'.\- ]+$/.test(s)) return false;
-  return words.every(w=>/^[A-ZÀ-ÖØ-Þ]/.test(w)||/^(de|del|der|di|du|la|le|van|von|jr\.?|sr\.?)$/i.test(w));
-}
-function normalizeUrl(raw,base){try{return new URL(String(raw||'').trim(),base||undefined).href.split('#')[0]}catch{return''}}
-function sameHost(a,b){try{return new URL(a).host.replace(/^www\./,'')===new URL(b).host.replace(/^www\./,'')}catch{return false}}
-function siteRoot(u){try{const x=new URL(u);return `${x.protocol}//${x.host}/`}catch{return u||''}}
-function extractLinks(raw,base){
-  const out=new Set(),s=String(raw||'');
-  const pieces=[...(s.match(/https?:\/\/[^\s"'<>\)]+/gi)||[]),...[...s.matchAll(/href=["']([^"']+)["']/gi)].map(m=>m[1]),...[...s.matchAll(/\[[^\]]+\]\(([^\)]+)\)/g)].map(m=>m[1])];
-  for(const p of pieces){const u=normalizeUrl(p,base); if(!u||BAD_URL.test(u)) continue; if(sameHost(u,base)||sameHost(u,siteRoot(base))) out.add(u)}
-  return [...out];
-}
-function guestCandidateLinks(raw,base){return extractLinks(raw,base).filter(u=>POSSIBLE_GUEST_URL.test(u)&&!BAD_URL.test(u)).slice(0,10)}
-function metadataLinks(raw,base){return [base,siteRoot(base),...extractLinks(raw,base).filter(u=>/about|show-info|info|attend|visit|venue|faq|getting-here|home|plan/i.test(u)).slice(0,6)].filter(Boolean)}
-async function scrape(url){
-  if(!url) return {raw:'',text:'',method:'none',url};
-  if(FIRECRAWL_API_KEY){
-    try{const r=await fetch('https://api.firecrawl.dev/v2/scrape',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${FIRECRAWL_API_KEY}`},body:JSON.stringify({url,formats:['markdown','html','links'],onlyMainContent:false,waitFor:3500,timeout:60000,removeBase64Images:true})});const j=await r.json().catch(()=>({}));if(r.ok&&j.success){const raw=[j.data?.markdown,j.data?.html,Array.isArray(j.data?.links)?j.data.links.join('\n'):''].filter(Boolean).join('\n');return{raw,text:cleanHtml(raw),method:'firecrawl',url}}}catch{}
-  }
-  try{const r=await fetch(url,{headers:{'user-agent':'ComicConTracker/18.0 refresh'}});if(!r.ok)throw new Error(String(r.status));const raw=await r.text();return{raw,text:cleanHtml(raw),method:'direct',url}}catch(e){return{raw:'',text:'',method:'failed',warning:e.message,url}}
-}
+function looksName(n=''){const s=String(n||'').replace(/\s+/g,' ').trim();if(/^J\.?\s*R\.?\s*Ward$/i.test(s)||/^JR\s*Ward$/i.test(s))return true;if(!s||s.length<4||s.length>70||BAD_NAME.test(s))return false;if(/[,#$]|\$|https?:|@|:|\/|\\|\||\d{3,}/i.test(s))return false;const w=s.split(/\s+/).filter(Boolean);if(w.length<2||w.length>5||s===s.toUpperCase())return false;if(!/^[A-Za-zÀ-ÖØ-öø-ÿ'.\- ]+$/.test(s))return false;return w.every(x=>/^[A-ZÀ-ÖØ-Þ]/.test(x)||/^(de|del|der|di|du|la|le|van|von|jr\.?|sr\.?)$/i.test(x))}
+function abs(raw,base){try{return new URL(stripUrl(raw),base||undefined).href.split('#')[0]}catch{return''}}
+function same(a,b){try{return new URL(a).host.replace(/^www\./,'')===new URL(b).host.replace(/^www\./,'')}catch{return false}}
+function root(u){try{const x=new URL(u);return `${x.protocol}//${x.host}/`}catch{return u||''}}
+function links(raw,base){const out=new Set(),s=String(raw||''),parts=[...(s.match(/https?:\/\/[^\s"'<>\)]+/gi)||[]),...[...s.matchAll(/href=["']([^"']+)["']/gi)].map(m=>m[1]),...[...s.matchAll(/\[[^\]]+\]\(([^\)]+)\)/g)].map(m=>m[1])];for(const p of parts){const u=abs(p,base);if(!u||BAD_SOURCE.test(u))continue;if(same(u,base)||same(u,root(base)))out.add(u)}return[...out]}
+function guestLinks(raw,base){return links(raw,base).filter(u=>POSSIBLE_GUEST.test(u)&&!BAD_SOURCE.test(u)).slice(0,6)}
+function metaLinks(raw,base){return [base,root(base),...links(raw,base).filter(u=>/about|show-info|info|attend|visit|venue|faq|getting-here|home|plan/i.test(u)).slice(0,6)].filter(Boolean)}
+async function page(url){url=stripUrl(url);if(!url)return{raw:'',text:'',method:'none',url};if(FIRECRAWL_API_KEY){try{const r=await fetch('https://api.firecrawl.dev/v2/scrape',{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${FIRECRAWL_API_KEY}`},body:JSON.stringify({url,formats:['markdown','html','links'],onlyMainContent:false,waitFor:3500,timeout:60000,removeBase64Images:true})});const j=await r.json().catch(()=>({}));if(r.ok&&j.success){const raw=[j.data?.markdown,j.data?.html,Array.isArray(j.data?.links)?j.data.links.join('\n'):''].filter(Boolean).join('\n');return{raw,text:text(raw),method:'firecrawl',url}}}catch{}}
+try{const r=await fetch(url,{headers:{'user-agent':'ComicConTracker/18.1'}});if(!r.ok)throw new Error(String(r.status));const raw=await r.text();return{raw,text:text(raw),method:'direct',url}}catch(e){return{raw:'',text:'',method:'failed',warning:e.message,url}}}
 function iso(y,m,d){y=Number(y);d=Number(d);if(!Number.isFinite(y)||!Number.isFinite(d)||m==null||y<2020||y>2100||d<1||d>31)return'';const dt=new Date(Date.UTC(y,m,d));return dt.getUTCMonth()===m&&dt.getUTCDate()===d?dt.toISOString().slice(0,10):''}
-function fmtRange(s,e){if(!s)return'TBD';const opt={month:'short',day:'numeric',timeZone:'UTC'},sd=new Date(s+'T00:00:00Z'),ed=e?new Date(e+'T00:00:00Z'):null;if(ed&&!Number.isNaN(ed.getTime())&&e!==s)return `${sd.toLocaleDateString('en-CA',opt)} - ${ed.toLocaleDateString('en-CA',opt)}, ${sd.getUTCFullYear()}`;return `${sd.toLocaleDateString('en-CA',opt)}, ${sd.getUTCFullYear()}`}
-function parseDates(t){
-  t=cleanHtml(t).replace(/\s+/g,' ');const mw='Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?';
-  let m=t.match(new RegExp(`\\b(${mw})\\s+(\\d{1,2})\\s*(?:-|–|—|to)\\s*(?:(${mw})\\s+)?(\\d{1,2}),?\\s*(20\\d{2})`,'i'));
-  if(m){const sm=MONTH[m[1].toLowerCase().slice(0,3)]??MONTH[m[1].toLowerCase()],em=MONTH[(m[3]||m[1]).toLowerCase().slice(0,3)]??MONTH[(m[3]||m[1]).toLowerCase()],s=iso(m[5],sm,m[2]),e=iso(m[5],em,m[4]);if(s)return{startDate:s,endDate:e||s,dates:fmtRange(s,e||s)}}
-  m=t.match(new RegExp(`\\b(${mw})\\s+(\\d{1,2}),?\\s*(20\\d{2})`,'i'));
-  if(m){const sm=MONTH[m[1].toLowerCase().slice(0,3)]??MONTH[m[1].toLowerCase()],s=iso(m[3],sm,m[2]);if(s)return{startDate:s,endDate:s,dates:fmtRange(s,s)}}
-  return{startDate:'',endDate:'',dates:''};
-}
-function extractVenue(text,fallback=''){
-  const bad=/\b(cookie|privacy|terms|contact|subscribe|newsletter|tickets|guest|autograph|photo op|facebook|instagram)\b/i,good=/\b(convention centre|convention center|expo centre|expo center|exhibition centre|exhibition center|conference centre|conference center|stampede park|javits|event centre|event center|arena|hall|pavilion|fairgrounds|venue)\b/i;
-  for(const line of cleanHtml(text).split(/\n+/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean)){if(line.length>=5&&line.length<=120&&!bad.test(line)&&good.test(line))return line}
-  const m=cleanHtml(text).match(/(?:venue|location)\s*:?\s*([^\n]{5,120})/i);return m&&!bad.test(m[1])?m[1].trim():fallback||'TBD';
-}
-function extractCity(text,c,fallback=''){if(fallback&&fallback!=='TBD')return fallback;const n=String(c?.name||'').match(/\b(Edmonton|Calgary|Vancouver|Toronto|Montreal|New York|Seattle|Los Angeles|Chicago|Orlando|Ottawa|Winnipeg|Halifax)\b/i);if(n)return n[1];const m=cleanHtml(text).match(/\b(Vancouver|Edmonton|Calgary|Toronto|Montreal|New York|Seattle|Los Angeles|Chicago|Orlando|Ottawa|Winnipeg|Halifax)\b/i);return m?m[1]:fallback||'TBD'}
-function pageIsCurrentGuestSource(raw,eventYear){
-  const text=cleanHtml(raw);
-  if(!text||PAST_MARKER.test(text)) return false;
-  if(/\b(no guests announced|guests coming soon|check back|to be announced|guest announcements coming soon)\b/i.test(text)) return false;
-  if(!eventYear) return false;
-  return new RegExp(`\\b${eventYear}\\b`).test(text);
-}
-function parseGuests(raw,sourceUrl,eventYear){
-  if(!pageIsCurrentGuestSource(raw,eventYear)) return [];
-  const map=new Map();
-  const lines=cleanHtml(raw).split(/\n+/).map(x=>x.replace(/^#+\s*/,'').replace(/[*_`]/g,'').replace(/\s+/g,' ').trim()).filter(Boolean);
-  for(const line of lines){
-    const name=line.replace(/\[[^\]]+\]\([^\)]+\)/g,' ').replace(/\s+-\s+appearing.*$/i,'').replace(/\s+appearing\s+(thursday|friday|saturday|sunday).*$/i,'').replace(/\s+(autograph|photo op|panel|spotlight|q&a).*$/i,'').trim();
-    if(looksLikePersonName(name)&&!map.has(norm(name))) map.set(norm(name),{name,fandom:'Guest',days:['TBD'],auto:0,photo:0,photoUrl:'',source:'Current-year verified guest',sourceUrl,eventYear,currentVerified:true});
-  }
-  return [...map.values()];
-}
-function mergeCurrentOnly(existing=[],fresh=[]){
-  const old=new Map((existing||[]).filter(g=>g?.name).map(g=>[norm(g.name),g]));
-  const changes=[],guests=[];
-  for(const g of fresh||[]){const x=old.get(norm(g.name));guests.push({id:x?.id||guid(),must:x?.must===true,hidden:x?.hidden===true,img:x?.img||initials(g.name),schedule:x?.schedule||'TBD',firstSeen:x?.firstSeen||new Date().toISOString(),lastSeen:new Date().toISOString(),...g,photoUrl:x?.photoUrl||g.photoUrl||'',auto:x?.auto||g.auto||0,photo:x?.photo||g.photo||0,days:Array.isArray(x?.days)&&x.days.length&&!x.days.every(d=>String(d).toUpperCase()==='TBD')?x.days:g.days});if(!x)changes.push({type:'newGuest',name:g.name})}
-  for(const g of existing||[]) if(g?.name&&!fresh.some(f=>norm(f.name)===norm(g.name))) changes.push({type:'removedNotCurrentOrCancelled',name:g.name});
-  return{guests,changes};
-}
-export default async function handler(req,res){
-  if(req.method!=='POST') return res.status(405).json({error:'POST only'});
-  try{
-    const {convention}=req.body||{}; if(!convention) return res.status(400).json({error:'Missing convention'});
-    const mainUrl=convention.website||convention.guestUrl||'', guestUrl=convention.guestUrl||convention.website||''; if(!mainUrl&&!guestUrl) return res.status(400).json({error:'Convention needs a website or guest URL'});
-    const main=await scrape(mainUrl||guestUrl), first=guestUrl&&guestUrl!==mainUrl?await scrape(guestUrl):main;
-    const metaPages=[main]; for(const u of metadataLinks(main.raw,mainUrl||guestUrl)) if(u!==mainUrl&&u!==guestUrl) metaPages.push(await scrape(u));
-    const combined=metaPages.map(p=>p.text||p.raw).join('\n'); const pd=parseDates(combined); const previousStart=convention.startDate||convention.start||''; const startDate=pd.startDate||previousStart||''; const endDate=pd.endDate||convention.endDate||''; const eventYear=(startDate.match(/^20\d{2}/)||[''])[0];
-    const guestPages=[first]; for(const u of guestCandidateLinks([main.raw,first.raw].join('\n'),mainUrl||guestUrl)) if(u!==guestUrl&&u!==mainUrl) guestPages.push(await scrape(u));
-    const fresh=[...new Map(guestPages.flatMap(p=>parseGuests(p.raw||p.text,p.url||guestUrl||mainUrl,eventYear)).map(g=>[norm(g.name),g])).values()];
-    const merged=mergeCurrentOnly(convention.guests||[],fresh); const rollover=Boolean(pd.startDate&&previousStart&&pd.startDate!==previousStart);
-    return res.status(200).json({convention:{...convention,city:extractCity(combined,convention,convention.city),dates:pd.dates||convention.dates||'TBD',startDate,endDate,start:startDate,venue:extractVenue(combined,convention.venue),website:mainUrl,guestUrl,guests:merged.guests,guestStatus:merged.guests.length?`${merged.guests.filter(g=>!g.hidden).length} active current guest(s)`:'No guests announced yet',previousStartDate:rollover?previousStart:convention.previousStartDate||'',eventCycleUpdatedAt:rollover?new Date().toISOString():convention.eventCycleUpdatedAt||'',lastChecked:new Date().toISOString(),refreshStatus:'updated'},changes:merged.changes,parsedGuestCount:fresh.length,methods:{guestPage:guestPages.map(p=>`${p.method}:${p.url}`).join('|'),mainPage:metaPages.map(p=>`${p.method}:${p.url}`).join('|')},warnings:[main.warning,first.warning,...guestPages.map(p=>p.warning),...metaPages.map(p=>p.warning)].filter(Boolean),hasFirecrawlKey:Boolean(FIRECRAWL_API_KEY),photosFound:0,mode:'fresh-current-year-only-v18.0'});
-  }catch(e){return res.status(500).json({error:e.message||'Refresh failed'})}
-}
+function range(s,e){if(!s)return'TBD';const opt={month:'short',day:'numeric',timeZone:'UTC'},sd=new Date(s+'T00:00:00Z'),ed=e?new Date(e+'T00:00:00Z'):null;if(ed&&!Number.isNaN(ed.getTime())&&e!==s)return `${sd.toLocaleDateString('en-CA',opt)} - ${ed.toLocaleDateString('en-CA',opt)}, ${sd.getUTCFullYear()}`;return `${sd.toLocaleDateString('en-CA',opt)}, ${sd.getUTCFullYear()}`}
+function dates(t){t=text(t).replace(/\s+/g,' ');const mw='Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?';let m=t.match(new RegExp(`\\b(${mw})\\s+(\\d{1,2})\\s*(?:-|–|—|to)\\s*(?:(${mw})\\s+)?(\\d{1,2}),?\\s*(20\\d{2})`,'i'));if(m){const sm=MONTH[m[1].toLowerCase().slice(0,3)]??MONTH[m[1].toLowerCase()],em=MONTH[(m[3]||m[1]).toLowerCase().slice(0,3)]??MONTH[(m[3]||m[1]).toLowerCase()],s=iso(m[5],sm,m[2]),e=iso(m[5],em,m[4]);if(s)return{startDate:s,endDate:e||s,dates:range(s,e||s)}}m=t.match(new RegExp(`\\b(${mw})\\s+(\\d{1,2}),?\\s*(20\\d{2})`,'i'));if(m){const sm=MONTH[m[1].toLowerCase().slice(0,3)]??MONTH[m[1].toLowerCase()],s=iso(m[3],sm,m[2]);if(s)return{startDate:s,endDate:s,dates:range(s,s)}}return{startDate:'',endDate:'',dates:''}}
+function venue(t,f=''){const bad=/\b(cookie|privacy|terms|contact|subscribe|newsletter|tickets|guest|autograph|photo op|facebook|instagram)\b/i,good=/\b(convention centre|convention center|expo centre|expo center|exhibition centre|exhibition center|conference centre|conference center|stampede park|javits|event centre|event center|arena|hall|pavilion|fairgrounds|venue)\b/i;for(const line of text(t).split(/\n+/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean)){if(line.length>=5&&line.length<=120&&!bad.test(line)&&good.test(line))return line}const m=text(t).match(/(?:venue|location)\s*:?\s*([^\n]{5,120})/i);return m&&!bad.test(m[1])?m[1].trim():f||'TBD'}
+function city(t,c,f=''){if(f&&f!=='TBD')return f;const n=String(c?.name||'').match(/\b(Edmonton|Calgary|Vancouver|Toronto|Montreal|New York|Seattle|Los Angeles|Chicago|Orlando|Ottawa|Winnipeg|Halifax)\b/i);if(n)return n[1];const m=text(t).match(/\b(Vancouver|Edmonton|Calgary|Toronto|Montreal|New York|Seattle|Los Angeles|Chicago|Orlando|Ottawa|Winnipeg|Halifax)\b/i);return m?m[1]:f||'TBD'}
+function canParseGuests(raw,year){const t=text(raw);return Boolean(t&&year&&new RegExp(`\\b${year}\\b`).test(t)&&!PAST_PAGE.test(t)&&PAGE_CUE.test(t)&&!/\b(no guests announced|guests coming soon|check back|to be announced|guest announcements coming soon)\b/i.test(t))}
+function guestsFrom(raw,sourceUrl,year){if(BAD_SOURCE.test(sourceUrl||'')||!canParseGuests(raw,year))return[];const lines=text(raw).split(/\n+/).map(x=>x.replace(/^#+\s*/,'').replace(/[*_`]/g,'').replace(/\s+/g,' ').trim()).filter(Boolean),map=new Map();for(let i=0;i<lines.length;i++){let name=lines[i].replace(/\[[^\]]+\]\([^\)]+\)/g,' ').replace(/\s+-\s+appearing.*$/i,'').replace(/\s+appearing\s+(thursday|friday|saturday|sunday).*$/i,'').replace(/\s+(autograph|photo op|panel|spotlight|q&a).*$/i,'').trim();if(!looksName(name))continue;const ctx=lines.slice(Math.max(0,i-3),Math.min(lines.length,i+4)).join(' ');if(!CARD_CUE.test(ctx))continue;const k=norm(name);if(!map.has(k))map.set(k,{name,fandom:'Guest',days:['TBD'],auto:0,photo:0,photoUrl:'',source:'Current-card verified guest',sourceUrl,eventYear:year,currentVerified:true,verifiedBy:VERSION})}return[...map.values()]}
+function merge(existing=[],fresh=[]){const old=new Map((existing||[]).filter(g=>g?.name).map(g=>[norm(g.name),g])),changes=[],guests=[];for(const g of fresh){const x=old.get(norm(g.name));guests.push({id:x?.id||guid(),must:x?.must===true,hidden:x?.hidden===true,img:x?.img||initials(g.name),schedule:x?.schedule||'TBD',firstSeen:x?.firstSeen||new Date().toISOString(),lastSeen:new Date().toISOString(),...g,photoUrl:x?.photoUrl||g.photoUrl||'',auto:x?.auto||g.auto||0,photo:x?.photo||g.photo||0,days:Array.isArray(x?.days)&&x.days.length&&!x.days.every(d=>String(d).toUpperCase()==='TBD')?x.days:g.days});if(!x)changes.push({type:'newGuest',name:g.name})}for(const g of existing||[])if(g?.name&&!fresh.some(f=>norm(f.name)===norm(g.name)))changes.push({type:'removedNotCurrentOrCancelled',name:g.name});return{guests,changes}}
+export default async function handler(req,res){if(req.method!=='POST')return res.status(405).json({error:'POST only'});try{const{convention}=req.body||{};if(!convention)return res.status(400).json({error:'Missing convention'});const mainUrl=stripUrl(convention.website||convention.guestUrl||''),guestUrl=stripUrl(convention.guestUrl||convention.website||'');if(!mainUrl&&!guestUrl)return res.status(400).json({error:'Convention needs a website or guest URL'});const main=await page(mainUrl||guestUrl),first=guestUrl&&guestUrl!==mainUrl?await page(guestUrl):main;const meta=[main];for(const u of metaLinks(main.raw,mainUrl||guestUrl))if(u!==mainUrl&&u!==guestUrl)meta.push(await page(u));const combined=meta.map(p=>p.text||p.raw).join('\n'),pd=dates(combined),prev=convention.startDate||convention.start||'',startDate=pd.startDate||prev||'',endDate=pd.endDate||convention.endDate||'',year=(startDate.match(/^20\d{2}/)||[''])[0];const pages=[first];for(const u of guestLinks([main.raw,first.raw].join('\n'),mainUrl||guestUrl))if(u!==guestUrl&&u!==mainUrl)pages.push(await page(u));const fresh=[...new Map(pages.flatMap(p=>guestsFrom(p.raw||p.text,p.url||guestUrl||mainUrl,year)).map(g=>[norm(g.name),g])).values()];const merged=merge(convention.guests||[],fresh),roll=Boolean(pd.startDate&&prev&&pd.startDate!==prev);return res.status(200).json({convention:{...convention,city:city(combined,convention,convention.city),dates:pd.dates||convention.dates||'TBD',startDate,endDate,start:startDate,venue:venue(combined,convention.venue),website:mainUrl,guestUrl,guests:merged.guests,guestStatus:merged.guests.length?`${merged.guests.filter(g=>!g.hidden).length} active current guest(s)`:'No guests announced yet',previousStartDate:roll?prev:convention.previousStartDate||'',eventCycleUpdatedAt:roll?new Date().toISOString():convention.eventCycleUpdatedAt||'',lastChecked:new Date().toISOString(),refreshStatus:'updated'},changes:merged.changes,parsedGuestCount:fresh.length,methods:{guestPage:pages.map(p=>`${p.method}:${p.url}`).join('|'),mainPage:meta.map(p=>`${p.method}:${p.url}`).join('|')},warnings:[main.warning,first.warning,...pages.map(p=>p.warning),...meta.map(p=>p.warning)].filter(Boolean),hasFirecrawlKey:Boolean(FIRECRAWL_API_KEY),photosFound:0,mode:VERSION})}catch(e){return res.status(500).json({error:e.message||'Refresh failed'})}}
